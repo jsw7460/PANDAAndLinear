@@ -20,20 +20,20 @@ from util import get_util_range, Datasets
 test_module = heu.test_RTA_LC
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--num_tasks", type=int, default=48)
-parser.add_argument("--num_procs", type=int, default=6)
+parser.add_argument("--num_tasks", type=int, default=32)
+parser.add_argument("--num_procs", type=int, default=4)
 parser.add_argument("--num_epochs", type=int, default=15)
 parser.add_argument("--num_train_dataset", type=int, default=200000)
 parser.add_argument("--num_test_dataset", type=int, default=5000)
 parser.add_argument("--embedding_size", type=int, default=128)
 parser.add_argument("--hidden_size", type=int, default=128)
-parser.add_argument("--batch_size", type=int, default=256)
+parser.add_argument("--batch_size", type=int, default=20)
 parser.add_argument("--grad_clip", type=float, default=1.5)
 parser.add_argument("--lr", type=float, default=1.0 * 1e-2)
 parser.add_argument("--lr_decay_step", type=int, default=100)
 parser.add_argument("--use_deadline", action="store_true")
-parser.add_argument("--range_l", type=str, default="4.60")
-parser.add_argument("--range_r", type=str, default="4.60")
+parser.add_argument("--range_l", type=str, default="3.10")
+parser.add_argument("--range_r", type=str, default="3.10")
 
 confidence = 0.05
 
@@ -124,20 +124,20 @@ if __name__ == "__main__":
     rl_model = rl_model.eval()
 
     ret = []
-    for i, _batch in eval_loader:
-        if use_cuda:
-            _batch = _batch.cuda()
-        R, log_prob, actions = model(_batch, argmax=True)
-        for j, chosen in enumerate(actions.cpu().numpy()):
-            order = np.zeros_like(chosen)
-            for p in range(args.num_tasks):
-                order[chosen[p]] = args.num_tasks - p - 1
-            if use_cuda:
-                ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline, False))
-            else:
-                ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
-
-    print("[Before training][RL model generates %d]" % (np.sum(ret)))
+    # for i, _batch in eval_loader:
+    #     if use_cuda:
+    #         _batch = _batch.cuda()
+    #     R, log_prob, actions = model(_batch, argmax=True)
+    #     for j, chosen in enumerate(actions.cpu().numpy()):
+    #         order = np.zeros_like(chosen)
+    #         for p in range(args.num_tasks):
+    #             order[chosen[p]] = args.num_tasks - p - 1
+    #         if use_cuda:
+    #             ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline, False))
+    #         else:
+    #             ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
+    #
+    # print("[Before training][RL model generates %d]" % (np.sum(ret)))
 
     linear_model = LinearSolver(args.num_procs, args.num_tasks,
                                 args.use_deadline, use_cuda)
@@ -164,11 +164,10 @@ if __name__ == "__main__":
                 order = torch.zeros_like(chosen)
                 for p in range(args.num_tasks):
                     order[chosen[p]] = args.num_tasks - p - 1
-                    rl_order[j] = order
+                rl_order[j] = order
             linear_loss = linear_model.listnet_loss(sample_batch, rl_order)
             linear_loss.backward()
             loss_ += linear_loss / (args.batch_size)
-            print(epoch, linear_loss)
             optimizer.step()
             if batch_idx % 10 == 0:
                 with open("cumloss/list/" + fname, "a") as f:

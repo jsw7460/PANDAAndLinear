@@ -85,7 +85,7 @@ class Pointer(nn.Module):
         self.W_k = nn.Linear(self.input_size, self.hidden_size)
         self.W_v = nn.Linear(self.input_size, self.hidden_size)
 
-    def forward(self, query, target, mask=None):
+    def forward(self, query, target, mask=None, ret_score=False):
         """
         Parameters
         ----------
@@ -103,8 +103,9 @@ class Pointer(nn.Module):
 
         if mask is not None:
             _mask = mask.clone()
-            qk[_mask] = -100000.0
-
+            qk[_mask] = -100000000.0
+        if ret_score:
+            return qk
         alpha = torch.softmax(qk, dim=-1)
         ret = torch.einsum("ij,ijk->ij", [alpha, v])
         return alpha, ret

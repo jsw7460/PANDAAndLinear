@@ -13,13 +13,12 @@ from sched_solver import Solver
 import cy_heuristics as heu
 from util import Datasets, get_util_range
 
-"""하나의 큰 모델이 주어졌을 때 Adaptation."""
-"""하나의 큰 모델 : 해당 num_procs, num_tasks에서, 전체 utilization에서 학습해둔 model"""
+"""Adaptation없이 해당 구간에서 직접 바로 학습"""
 
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--num_tasks", type=int, default=32)
-parser.add_argument("--num_procs", type=int, default=4)
+parser.add_argument("--num_tasks", type=int, default=48)
+parser.add_argument("--num_procs", type=int, default=6)
 parser.add_argument("--num_epochs", type=int, default=10)
 parser.add_argument("--num_train_dataset", type=int, default=100000)
 parser.add_argument("--num_test_dataset", type=int, default=5000)
@@ -100,37 +99,10 @@ if __name__ == "__main__":
         opares = np.sum(res_opa)
     print("[before training][OPA generates %d]" % opares)
 
-    load_fname = "globalRL-p%d-t%d-d%d-l" % (args.num_procs, args.num_tasks, args.use_deadline)
-    tmp = torch.load("../Pandamodels/globalrlmodels/" + load_fname + ".torchmodel").cuda()
-
     rl_model = Solver(args.num_procs, args.embedding_size, args.hidden_size,
                       args.num_tasks, use_deadline=False, use_cuda=True)
-    rl_model.load_state_dict(tmp.state_dict())
     if args.use_cuda:
         rl_model.cuda()
-
-    """Freeze the weight of the global reinforcement model"""
-    freezing_param_name = ["init_w", "embedding", "mha"]
-    for name, param in rl_model.named_parameters():
-        if name.split(".")[1] in freezing_param_name:
-            param.requires_grad = False
-
-    """Evaluate global model before the training"""
-    rl_model.eval()
-    ret = []
-    for i, batch in eval_loader:
-        if use_cuda:
-            batch = batch.cuda()
-        R, log_prob, actions = rl_model(batch, argmax=True)
-        for j, chosen in enumerate(actions.cpu().numpy()):
-            order = np.zeros_like(chosen)
-            for k in range(args.num_tasks):
-                order[chosen[k]] = args.num_tasks - k - 1  # 중요할수록 숫자가 높다.
-            if use_cuda:
-                ret.append(test_module(batch[j].cpu().numpy(), args.num_procs, order, args.use_deadline, False))
-            else:
-                ret.append(test_module(batch[j].numpy(), args.num_procs, order, args.use_deadline, False))
-    print("Before training, global model generates", sum(ret))
 
     start = time.time()
     """Training Loop"""
@@ -179,7 +151,7 @@ if __name__ == "__main__":
             p = scipy.stats.t.cdf(tval, num_samples)
             if (p >= 1. - 0.5 * confidence) or (p <= 0.5 * confidence):
                 bl_model.load_state_dict(rl_model.state_dict())
-            if updates % 50 == 0:
+            if updates % 100 == 0:
                 end = time.time()
                 rl_model.eval()
                 ret = []
@@ -197,7 +169,7 @@ if __name__ == "__main__":
                         else:
                             ret.append(test_module(_batch[j].numpy(), args.num_procs,
                                                    order, args.use_deadline, False))
-                fname = "localRL-p%d-t%d-d%d-l[%s, %s]" % (args.num_procs, args.num_tasks,
+                fname = "nonadaptRL-p%d-t%d-d%d-l[%s, %s]" % (args.num_procs, args.num_tasks,
                                                        int(args.use_deadline), args.range_l, args.range_r)
                 rl_model_sum = np.sum(ret)
 
@@ -210,7 +182,7 @@ if __name__ == "__main__":
                       % (updates * args.batch_size, epoch, rl_model_sum, opares),
                       "log_probability\t", log_prob.cpu().detach().numpy().mean(), "avg_hit", np.mean(avg_hit))
                 stop = False
-                with open("log/locallog/" + fname, "a") as f:
+                with open("log/nonadapt/" + fname, "a") as f:
                     print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]"
                           % (updates * args.batch_size, epoch, rl_model_sum, opares),
                           "log_probability\t", log_prob.cpu().detach().numpy().mean(),
@@ -219,22 +191,22 @@ if __name__ == "__main__":
                         print("total hit at epoch", epoch, file=f)
                         print("경과시간 : {}m {}s".format(minute, second), file=f)
                         print("total hit at epoch", epoch)
-                        torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
+                        torch.save(rl_model, "../Pandamodels/nonadapt/" + fname + ".torchmodel")
                         print("SAVE SUCCESS")
                         stop = True
 
                     if rl_model_sum > _max:
                         noupdateinarow = 0
                         _max = rl_model_sum
-                        torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
+                        torch.save(rl_model, "../Pandamodels/nonadapt/" + fname + ".torchmodel")
                         print("SAVE SUCCESS")
                     else:
                         noupdateinarow += 1
-                    if noupdateinarow >= 2:
-                        print("not update 2 times", epoch, file=f)
+                    if noupdateinarow >= 20:
+                        print("not update 20 times", epoch, file=f)
                         print("경과시간 : {}m {}s".format(minute, second), file=f)
                         print("not update m0 times", epoch)
-                        torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
+                        torch.save(rl_model, "../Pandamodels/nonadapt/" + fname + ".torchmodel")
                         print("SAVE SUCCESS")
                         stop = True
                 if stop:

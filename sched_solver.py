@@ -138,15 +138,23 @@ def beam_next_nodes(actor, node, beam_size, h, h_mean, h_bar, h_rest):
 
 
 executor = executor = ProcessPoolExecutor(max_workers=N_WORKERS)
+
 class Solver(nn.Module):
-    def __init__(self, num_proc, embedding_size, hidden_size, seq_len, tanh_exploration=5, use_deadline=False, nimp=False, use_cuda=True, ret_score = False):
+    def __init__(self, num_proc, embedding_size, hidden_size, seq_len, tanh_exploration=5, use_deadline=False,
+                 nimp=False, use_cuda=True, ret_score = False, ret_embedded_vector=False, only_encoder=False):
         super(Solver, self).__init__()
         self.num_proc = num_proc
         self.use_deadline = use_deadline
         self.use_cuda = use_cuda
         print("use_deadline", self.use_deadline)
         print("is_cuda", self.use_cuda)
-        self.actor = AttentionTSP(INPUT_SIZE, embedding_size, hidden_size, seq_len, n_head=4, C=tanh_exploration, use_cuda=use_cuda)
+        self.ret_embedded_vector = ret_embedded_vector
+        self.only_encoder = only_encoder
+        self.actor = AttentionTSP(INPUT_SIZE, embedding_size, hidden_size, seq_len,
+                                  n_head=4, C=tanh_exploration, use_cuda=use_cuda,
+                                  ret_embedded_vector=self.ret_embedded_vector,
+                                  only_encoder = only_encoder)
+
 
     def reward(self, sample, chosen):
         """
@@ -232,7 +240,7 @@ class Solver(nn.Module):
 
         return ret
 
-    def forward(self, inputs, argmax=False, get_reward=True, guide=None, multisampling = False):
+    def forward(self, inputs, argmax=False, get_reward=True, guide=None, multisampling=False):
         """
         Args:
             inputs: [batch_size, seq_len, 3] (T, C, D)
@@ -240,7 +248,12 @@ class Solver(nn.Module):
         batch_size, seq_len, _ = inputs.shape
 
         _inputs = self.input_transform(inputs)
-        probs, actions = self.actor(_inputs, argmax, guide=guide, multisampling = multisampling)
+        if multisampling:
+            return self.actor(_inputs, argmax, guide=guide, multisampling=multisampling)
+        try:
+            probs, actions = self.actor(_inputs, argmax, guide=guide, multisampling=multisampling)
+        except:
+            return self.actor(_inputs, argmax, guide=guide, multisampling=multisampling)
         # if self.ret_score:
         #     return probs
 
@@ -270,13 +283,3 @@ class Solver(nn.Module):
 
     def multisampling(self, inputs):
         actions = self.actor.multisampling(inputs)
-def test():
-    seq_len = 20
-    solver = Solver(64, 64, seq_len)
-    ds = sched.SchedSingleDataset(seq_len, 1000)
-    loader = DataLoader(ds, batch_size=64, shuffle=True, num_workers=4)
-    for idx, dps in loader:
-        solver.forward(dps)
-
-if __name__ == "__main__":
-    test()

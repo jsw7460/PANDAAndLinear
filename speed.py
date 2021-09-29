@@ -111,12 +111,14 @@ if __name__ == "__main__":
         shuffle = True,
         pin_memory=False
     )
+
     test_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,
         shuffle=False,
         pin_memory=False
     )
+
     eval_loader = DataLoader(
         test_dataset,
         batch_size=args.batch_size,

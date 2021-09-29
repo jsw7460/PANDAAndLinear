@@ -12,6 +12,8 @@ from torch.utils.data import DataLoader, Dataset
 import math
 from modules import Glimpse, GraphEmbedding, Pointer
 
+NUM_SAMPLING = 10
+
 class Normalization(nn.Module):
     # https://github.com/wouterkool/attention-learn-to-route/blob/ffd5b862f5b12867d82cfa9ea78344cc0d1bb4b8/nets/graph_encoder.py#L114
     def __init__(self, embed_dim, normalization='batch'):
@@ -70,16 +72,19 @@ class AttentionTSP(nn.Module):
                  seq_len,
                  n_head=4,
                  C=10,
-                 use_cuda=True):
+                 use_cuda=True, ret_embedded_vector=False,
+                 only_encoder=False):
         super(AttentionTSP, self).__init__()
-
+        self.ret_embedded_vector = ret_embedded_vector
         self.embedding_size = embedding_size
         self.hidden_size = hidden_size
         self.seq_len = seq_len
         self.n_head = n_head
         self.C = C
         self.use_cuda = use_cuda
-
+        self.only_encoder = only_encoder
+        if self.only_encoder:
+            self.linear_layer = nn.Linear(self.embedding_size, 1)
         self.embedding = GraphEmbedding(input_dim, embedding_size)
         self.mha = AttentionModule(embedding_size, n_head, hidden_size)
 
@@ -96,25 +101,53 @@ class AttentionTSP(nn.Module):
         self.h1_transform = nn.Linear(self.embedding_size, self.embedding_size)
         self.h2_transform = nn.Linear(self.embedding_size, self.embedding_size)
 
-    def forward(self, inputs, argmax=False, guide=None, multisampling = False):
+    def forward(self, inputs, argmax=False, guide=None, multisampling=False):
         """
         Args:
             inputs: [batch_size x seq_len x 2]
             guide:
         """
+        if multisampling:
+            return self.multisampling(inputs)
+        # self.ret_embedded_vector=True
         batch_size = inputs.shape[0]
         seq_len = inputs.shape[1]
-
         embedded, h, h_mean, h_bar, chosen_vector, left_vector, query = self._prepare(inputs)
         #init query
+        # if self.ret_embedded_vector:
+        #     return embedded
 
         prev_chosen_indices = []
         prev_chosen_logprobs = []
         mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+
+        # if self.only_encoder:
+        #     prob = torch.softmax(self.linear_layer(h).squeeze(), -1)       # [batch_size x seq_len]
+        #     for index in range(seq_len):
+        #         cat = Categorical(prob)
+        #         if argmax:
+        #             _, chosen = torch.max(prob, -1)
+        #         elif guide is not None:
+        #             chosen = guide[:, index]
+        #         else:
+        #             chosen = cat.sample()
+        #         logprobs = cat.log_prob(chosen)
+        #         logprobs = cat.log_prob(chosen)
+        #         prev_chosen_indices.append(chosen)
+        #         prev_chosen_logprobs.append(logprobs)
+        #         prob[chosen] = 0
+        #         print(prob)
+        #         print(prob.size())
+        #         print(torch.sum(prob, -1).size())
+        #         prob = prob / torch.sum(prob, -1).unsqueeze(1)
+
+        cumulated_distributions = []
         for index in range(seq_len):
             i = index
             _, n_query = self.glimpse(query, h, mask)
             prob, _ = self.pointer(n_query, h, mask)        # [batch size x num_tasks]
+            # cumulated_distributions.append(self.pointer(n_query, h, mask, ret_score=True))
+            cumulated_distributions.append(prob)
             cat = Categorical(prob)
             if argmax:
                 _, chosen = torch.max(prob, -1)
@@ -140,6 +173,8 @@ class AttentionTSP(nn.Module):
             h2 = self.h2_transform(torch.tanh(left_vector))
             v_weight = self.v_weight_embed(chosen_hs)
             query = self.h_query_embed(h1 + h2 + v_weight)
+        if self.ret_embedded_vector:        # KL Diverge용
+            return torch.stack(prev_chosen_logprobs, 1), torch.stack(prev_chosen_indices, 1), torch.stack(cumulated_distributions, dim=1)
         return torch.stack(prev_chosen_logprobs, 1), torch.stack(prev_chosen_indices, 1)
 
     def beam_search(self, inputs, beam_size=3, num_candidates=20):
@@ -148,7 +183,6 @@ class AttentionTSP(nn.Module):
         #embedded, h, h_mean, h_bar, h_rest, query = self._prepare(inputs)
         #beam_candidates = np.zeros(shape=(batch_size, seq_len, beam_size))
         return self._prepare(inputs)
-
 
 
     def _prepare(self, inputs):
@@ -175,33 +209,44 @@ class AttentionTSP(nn.Module):
 
         embedded, h, h_mean, h_bar, chosen_vector, left_vector, query = self._prepare(inputs)
         # init query
+        # print(h.size())       # [batch x num_task x embedding size]
+        # print(h_mean.size())      # [batch x embedding size]
+        # print(chosen_vector.size())   # [batch x emb size]
+        # print(left_vector.size())     # [batch x emb size]
+        # print(query.size())           # [batch x emb size]   ?
+        h_ext = h.unsqueeze(1).repeat(1, NUM_SAMPLING, 1, 1)        # [batch x NUM_SAMPLING x num_task x emb_size]
+        h_ext = h_ext.view(batch_size * NUM_SAMPLING, seq_len, -1)  # [batch x NUM_SAMPLING, num_task, emb_size]
+
+        query_ext = query.unsqueeze(1).repeat(1, NUM_SAMPLING, 1)   # [batch, NUM_SAMPLING, emb_size]
+        query_ext = query_ext.view(batch_size * NUM_SAMPLING, -1)   # [batch x NUM_SAMPLING, emb size]
+
+        h_mean = h_mean.unsqueeze(1).repeat(1, NUM_SAMPLING, 1)
+        h_mean.view(batch_size * NUM_SAMPLING, -1)
+
+        chosen_vector = chosen_vector.unsqueeze(1).repeat(1, NUM_SAMPLING, 1)
+        chosen_vector = chosen_vector.view(batch_size * NUM_SAMPLING, -1)
+
+        left_vector = left_vector.unsqueeze(1).repeat(1, NUM_SAMPLING, 1)
+        left_vector = left_vector.view(batch_size * NUM_SAMPLING, -1)
 
         prev_chosen_indices = []
         prev_chosen_logprobs = []
-        mask = torch.zeros(batch_size, seq_len, dtype=torch.bool)
+        mask = torch.zeros(batch_size * NUM_SAMPLING, seq_len, dtype=torch.bool)
         for index in range(seq_len):
             i = index
-            _, n_query = self.glimpse(query, h, mask)
-            prob, _ = self.pointer(n_query, h, mask)  # [batch size x num_tasks]
+            _, n_query = self.glimpse(query_ext, h_ext, mask)       # [batch x emb size]
+            prob, _ = self.pointer(n_query, h_ext, mask)  # [batch_size x NUM_SAMPLING, seq_len]
             cat = Categorical(prob)
-            if argmax:
-                _, chosen = torch.max(prob, -1)
-            elif guide is not None:
-                chosen = guide[:, index]
-            else:
-                if not multisampling:
-                    chosen = cat.sample()  # [batch_size].
-                if multisampling:
-                    chosen = cat.sample((5, 1))  # [num_sampling x batch_size]
-                    chosen = chosen.squeeze()
+            chosen = cat.sample()               # [batch_size x NUM_SAMPLING]
+            chosen = chosen.squeeze()
             logprobs = cat.log_prob(chosen)
             prev_chosen_indices.append(chosen)
             prev_chosen_logprobs.append(logprobs)
 
-            mask[[i for i in range(batch_size)], chosen] = True
+            mask[[i for i in range(batch_size * NUM_SAMPLING)], chosen] = True
 
             cc = chosen.unsqueeze(1).unsqueeze(2).repeat(1, 1, self.embedding_size)
-            chosen_hs = h.gather(1, cc).squeeze(1)
+            chosen_hs = h_ext.gather(1, cc).squeeze(1)
             chosen_vector = chosen_vector + self.chosen_transform(chosen_hs)
             left_vector = left_vector - self.memory_transform(chosen_hs)
             h1 = self.h1_transform(torch.tanh(chosen_vector))
@@ -209,4 +254,4 @@ class AttentionTSP(nn.Module):
             v_weight = self.v_weight_embed(chosen_hs)
             query = self.h_query_embed(h1 + h2 + v_weight)
 
-        return torch.stack(prev_chosen_logprobs, 1), torch.stack(prev_chosen_indices, 1)
+        return torch.stack(prev_chosen_indices, 1).view(batch_size, NUM_SAMPLING, seq_len)

@@ -16,10 +16,11 @@ import pickle
 Args = tup("Argument", "seq_len num_procs num_sample period_range util")
 NUM_SAMPLES = 200000
 
-## data/#procs_#tasks
 import sched
 import importlib
 importlib.reload(sched)
+
+
 def gen_taskset(num_procs, seq_len, ddir="data"):
     try:
         os.mkdir(ddir)
@@ -59,13 +60,14 @@ for num_proc in num_proc_list:
 from concurrent.futures import ProcessPoolExecutor
 E = ProcessPoolExecutor(32)
 
+
 def wrap(x):
     print("!")
     num_proc, num_task = x
     print(num_proc, num_task)
-    gen_taskset(num_proc, num_task,"../Pandadata/tr")
-    gen_taskset(num_proc, num_task,"../Pandadata/te")
-    gen_taskset(num_proc, num_task,"../Pandadata/val")
+    gen_taskset(num_proc, num_task, "../Pandadata/tr")
+    gen_taskset(num_proc, num_task, "../Pandadata/te")
+    gen_taskset(num_proc, num_task, "../Pandadata/val")
     return "!"
 
 for ret in E.map(wrap, samples):

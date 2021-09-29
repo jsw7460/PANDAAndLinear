@@ -24,18 +24,18 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument("--num_tasks", type=int, default=32)
 parser.add_argument("--num_procs", type=int, default=4)
-parser.add_argument("--num_epochs", type=int, default=15)
+parser.add_argument("--num_epochs", type=int, default=1500)
 parser.add_argument("--num_train_dataset", type=int, default=200000)
 parser.add_argument("--num_test_dataset", type=int, default=50)
 parser.add_argument("--embedding_size", type=int, default=128)
 parser.add_argument("--hidden_size", type=int, default=128)
-parser.add_argument("--batch_size", type=int, default=512)
+parser.add_argument("--batch_size", type=int, default=20)
 parser.add_argument("--grad_clip", type=float, default=1.5)
 parser.add_argument("--lr", type=float, default=1e-4)
 parser.add_argument("--lr_decay_step", type=int, default=100)
 parser.add_argument("--use_deadline", action="store_true")
-parser.add_argument("--range_l", type=str, default="4.60")
-parser.add_argument("--range_r", type=str, default="4.60")
+parser.add_argument("--range_l", type=str, default="2.70")
+parser.add_argument("--range_r", type=str, default="2.70")
 parser.add_argument("--use_cuda", action="store_true")
 parser.add_argument("--load", type=int, default=-1)
 parser.add_argument("--positive", action="store_true")
@@ -45,7 +45,6 @@ confidence = 0.05
 args = parser.parse_args()
 use_deadline = args.use_deadline
 use_cuda = True
-
 positive = False
 DEBUG = False
 if DEBUG:
@@ -56,8 +55,12 @@ fname = "LIN-p%d-t%d-d%d-l[%s, %s]" % (
 
 
 if __name__ == "__main__":
-    util_range = get_util_range(args.num_procs)
+    if positive:
+        print("Train with positive sampling")
+    else:
+        print("Train with all data")
 
+    util_range = get_util_range(args.num_procs)
     trsets = []
     tesets = []
     on = False
@@ -78,6 +81,7 @@ if __name__ == "__main__":
                 tesets.append(ts)
         if util == args.range_r:
             break
+
 
     train_dataset = Datasets(trsets)
     test_dataset = Datasets(tesets)
@@ -103,6 +107,7 @@ if __name__ == "__main__":
         pin_memory=True
     )
 
+
     def wrap(x):
         _sample, num_proc, use_deadline = x
         return heu.OPA(_sample, num_proc, None, use_deadline)
@@ -127,7 +132,7 @@ if __name__ == "__main__":
         args.hidden_size,
         args.num_tasks,
         use_deadline=False,
-        use_cuda=True, ret_embedded_vector=False
+        use_cuda=True
     )
     rl_model.load_state_dict(model.state_dict())
     if use_cuda:
@@ -137,62 +142,46 @@ if __name__ == "__main__":
     rl_model = rl_model.eval()
 
     ret = []
-    for i, _batch in eval_loader:
-        if use_cuda:
-            _batch = _batch.cuda()
-        R, log_prob, actions = model(_batch, argmax=True)
-        for j, chosen in enumerate(actions.cpu().numpy()):
-            order = np.zeros_like(chosen)
-            for p in range(args.num_tasks):
-                order[chosen[p]] = args.num_tasks - p - 1
-            if use_cuda:
-                ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline, False))
-            else:
-                ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
+   # for i, _batch in eval_loader:
+   #     if use_cuda:
+   #         _batch = _batch.cuda()
+   #     R, log_prob, actions = model(_batch, argmax=True)
+   #     for j, chosen in enumerate(actions.cpu().numpy()):
+   #         order = np.zeros_like(chosen)
+   #         for p in range(args.num_tasks):
+   #             order[chosen[p]] = args.num_tasks - p - 1
+   #         if use_cuda:
+   #             ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline, False))
+   #         else:
+   #             ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
 
-    print("[Before training][RL model generates %d]" % (np.sum(ret)))
+   # print("[Before training][RL model generates %d]" % (np.sum(ret)))
 
     linear_model = LinearSolver(args.num_procs, args.num_tasks,
                                 args.use_deadline, use_cuda)
 
     # TRAIN LOOP
-
-    with open("../Pandadata/tr/%d-%d/%slabel" % (args.num_procs, args.num_tasks, args.range_l), "rb") as f:
-        rl_label = pickle.load(f)
-    rl_order_numpy = np.vstack([batch for batch in rl_label])     # (200000 x num_tasks)
-    rl_orders = []
-    i = 0
-    while True:
-        x = rl_order_numpy[i * args.batch_size:(i+1) * args.batch_size, :]
-        x = torch.from_numpy(x)
-        rl_orders.append(x)
-        i += 1
-        if i > (args.num_train_dataset / args.batch_size):
-            break
-
     if use_cuda:
         linear_model = linear_model.to("cuda:0")
         rl_model = rl_model.to("cuda:0")
 
     linear_model = linear_model.train()
     criterion = nn.MSELoss()
-    optimizer = optim.Adam(linear_model.parameters(), lr=5e-2)
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.9)
+    optimizer = optim.Adam(linear_model.parameters(), lr=5e-3)
 
     start = time.time()
     for epoch in range(args.num_epochs):
         loss_ = 0
         avg_hit = []
         for batch_idx, (_, sample_batch) in enumerate(train_loader):
-            # print(sample_batch.device)
             optimizer.zero_grad()
             rewards, probs, action = rl_model(sample_batch)
+            # rl_order = rl_label[batch_idx]
             rl_order = torch.zeros_like(action)
-            for i in range(rl_order.size(0)):           # batch size
-                for j in range(rl_order.size(1)):       # num_tasks
+            for i in range(rl_order.size(0)):  # batch size
+                for j in range(rl_order.size(1)):  # num_tasks
                     rl_order[i][action[i][j]] = args.num_tasks - j - 1
             rl_order = soft_rank(rl_order.cpu(), regularization_strength=0.001).float()
-            # rl_order = rl_orders[batch_idx]
             linear_score = linear_model(sample_batch)
             lin_soft_score = soft_rank(linear_score.cpu(), regularization_strength=0.001).float()
             # 점수가 높으면 더 중요하다. 즉 우선순위가 더 높다
@@ -204,8 +193,7 @@ if __name__ == "__main__":
             print(epoch, loss)
             loss_ += loss / args.batch_size
             optimizer.step()
-            scheduler.step()
-
+            # scheduler.step()
             if batch_idx % 10 == 0:
                 with open("cumloss/soft/" + fname, "a") as f:
                     print("EPOCH:{}, LOSS:{:.3f}".format(epoch, loss_ / (batch_idx+1)), file=f)
@@ -214,39 +202,45 @@ if __name__ == "__main__":
         minute = int(elapsed // 60)
         second = int(elapsed - 60 * minute)
         # EVALUATE
-        linear_model.eval()
-        lin_ret = []
-        for i, _batch in eval_loader:
-            if use_cuda:
-                _batch = _batch.to("cuda:0")
-            ev_linear_score = linear_model(_batch)
-            _, ev_linear_score_idx = torch.sort(ev_linear_score, descending=True)
-            np_linear_score = ev_linear_score_idx.cpu().detach().numpy()
-            for j, chosen in enumerate(np_linear_score):
-                order = np.zeros_like(chosen)
-                for p in range(args.num_tasks):
-                    order[chosen[p]] = args.num_tasks - p - 1
-                if use_cuda:
-                    lin_ret.append(
-                        test_module(_batch[j].cpu().numpy(), args.num_procs,
-                                    order, use_deadline=False, ret_score=False))
-                else:
-                    lin_ret.append(
-                        test_module(
-                            _batch[j].numpy(), args.num_procs, order, False, False))
-        print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
-            epoch, np.sum(ret), np.sum(lin_ret), opares
-        ))
-        print("경과시간 : {}m{:}s".format(minute, second))
-        if epoch % 1 == 0:
-            fname = "LIN-p%d-t%d-d%d-l[%s, %s]" \
-                    % (args.num_procs, args.num_tasks, int(use_deadline), args.range_l, args.range_r)
-            # torch.save(linear_model, "../Pandamodels/linearmodels/" + fname + ".torchmodel")
-            print("SAVE SUCCESS")
-            with open("log/softlog/" + fname, "a") as f:
-                print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
-                    epoch, np.sum(ret), np.sum(lin_ret), opares
-                ), file=f)
-                print("경과시간 : {}m{:}s".format(minute, second), file=f)
+        # linear_model.eval()
+        # lin_ret = []
+        # for i, _batch in eval_loader:
+        #     if use_cuda:
+        #         _batch = _batch.to("cuda:0")
+        #     ev_linear_score = linear_model(_batch)
+        #     _, ev_linear_score_idx = torch.sort(ev_linear_score, descending=True)
+        #     np_linear_score = ev_linear_score_idx.cpu().detach().numpy()
+        #     for j, chosen in enumerate(np_linear_score):
+        #         order = np.zeros_like(chosen)
+        #         for p in range(args.num_tasks):
+        #             order[chosen[p]] = args.num_tasks - p - 1
+        #         if use_cuda:
+        #             lin_ret.append(
+        #                 test_module(_batch[j].cpu().numpy(), args.num_procs,
+        #                             order, use_deadline=False, ret_score=False))
+        #         else:
+        #             lin_ret.append(
+        #                 test_module(
+        #                     _batch[j].numpy(), args.num_procs, order, False, False))
+        # if not positive:
+        #     print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}. Not positive sampling".format(
+        #         epoch, np.sum(ret), np.sum(lin_ret), opares
+        #     ))
+        # else:
+        #     print(
+        #         "EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}. With positive sampling".format(
+        #             epoch, np.sum(ret), np.sum(lin_ret), opares
+        #         ))
+        # print("경과시간 : {}m{:}s".format(minute, second))
+        # if epoch % 1 == 0:
+        #     fname = "LIN-p%d-t%d-d%d-l[%s, %s]" \
+        #             % (args.num_procs, args.num_tasks, int(use_deadline), args.range_l, args.range_r)
+        #     torch.save(linear_model, "../Pandamodels/linearmodels/" + fname + ".torchmodel")
+        #     print("SAVE SUCCESS")
+        #     with open("log/softlog/" + fname, "a") as f:
+        #         print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
+        #             epoch, np.sum(ret), np.sum(lin_ret), opares
+        #         ), file=f)
+        #         print("경과시간 : {}m{:}s".format(minute, second), file=f)
 
         linear_model.train()

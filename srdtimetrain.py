@@ -22,20 +22,20 @@ from util import get_util_range, Datasets
 test_module = heu.test_RTA_LC
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--num_tasks", type=int, default=32)
-parser.add_argument("--num_procs", type=int, default=4)
+parser.add_argument("--num_tasks", type=int, default=64)
+parser.add_argument("--num_procs", type=int, default=8)
 parser.add_argument("--num_epochs", type=int, default=15)
 parser.add_argument("--num_train_dataset", type=int, default=200000)
-parser.add_argument("--num_test_dataset", type=int, default=50)
+parser.add_argument("--num_test_dataset", type=int, default=300)
 parser.add_argument("--embedding_size", type=int, default=128)
 parser.add_argument("--hidden_size", type=int, default=128)
-parser.add_argument("--batch_size", type=int, default=512)
+parser.add_argument("--batch_size", type=int, default=20)
 parser.add_argument("--grad_clip", type=float, default=1.5)
 parser.add_argument("--lr", type=float, default=1e-4)
 parser.add_argument("--lr_decay_step", type=int, default=100)
 parser.add_argument("--use_deadline", action="store_true")
-parser.add_argument("--range_l", type=str, default="4.60")
-parser.add_argument("--range_r", type=str, default="4.60")
+parser.add_argument("--range_l", type=str, default="6.10")
+parser.add_argument("--range_r", type=str, default="6.10")
 parser.add_argument("--use_cuda", action="store_true")
 parser.add_argument("--load", type=int, default=-1)
 parser.add_argument("--positive", action="store_true")
@@ -51,7 +51,7 @@ DEBUG = False
 if DEBUG:
     positive = True
 
-fname = "LIN-p%d-t%d-d%d-l[%s, %s]" % (
+fname = "ttestLIN-p%d-t%d-d%d-l[%s, %s]" % (
             args.num_procs, args.num_tasks, int(use_deadline), args.range_l, args.range_r)
 
 
@@ -127,7 +127,7 @@ if __name__ == "__main__":
         args.hidden_size,
         args.num_tasks,
         use_deadline=False,
-        use_cuda=True, ret_embedded_vector=False
+        use_cuda=True
     )
     rl_model.load_state_dict(model.state_dict())
     if use_cuda:
@@ -157,18 +157,18 @@ if __name__ == "__main__":
 
     # TRAIN LOOP
 
-    with open("../Pandadata/tr/%d-%d/%slabel" % (args.num_procs, args.num_tasks, args.range_l), "rb") as f:
+    with open("../Pandadata/tr/%d-%d/%s" % (args.num_procs, args.num_tasks, args.range_l), "rb") as f:
         rl_label = pickle.load(f)
     rl_order_numpy = np.vstack([batch for batch in rl_label])     # (200000 x num_tasks)
     rl_orders = []
     i = 0
-    while True:
-        x = rl_order_numpy[i * args.batch_size:(i+1) * args.batch_size, :]
-        x = torch.from_numpy(x)
-        rl_orders.append(x)
-        i += 1
-        if i > (args.num_train_dataset / args.batch_size):
-            break
+    # while True:
+    #     x = rl_order_numpy[i * args.batch_size:(i+1) * args.batch_size, :]
+    #     x = torch.from_numpy(x)
+    #     rl_orders.append(x)
+    #     i += 1
+    #     if i > (args.num_train_dataset / args.batch_size):
+    #         break
 
     if use_cuda:
         linear_model = linear_model.to("cuda:0")
@@ -192,6 +192,7 @@ if __name__ == "__main__":
                 for j in range(rl_order.size(1)):       # num_tasks
                     rl_order[i][action[i][j]] = args.num_tasks - j - 1
             rl_order = soft_rank(rl_order.cpu(), regularization_strength=0.001).float()
+            print(rl_order[0])
             # rl_order = rl_orders[batch_idx]
             linear_score = linear_model(sample_batch)
             lin_soft_score = soft_rank(linear_score.cpu(), regularization_strength=0.001).float()
@@ -209,44 +210,43 @@ if __name__ == "__main__":
             if batch_idx % 10 == 0:
                 with open("cumloss/soft/" + fname, "a") as f:
                     print("EPOCH:{}, LOSS:{:.3f}".format(epoch, loss_ / (batch_idx+1)), file=f)
-        endtime = time.time()
-        elapsed = (endtime - start)
-        minute = int(elapsed // 60)
-        second = int(elapsed - 60 * minute)
-        # EVALUATE
-        linear_model.eval()
-        lin_ret = []
-        for i, _batch in eval_loader:
-            if use_cuda:
-                _batch = _batch.to("cuda:0")
-            ev_linear_score = linear_model(_batch)
-            _, ev_linear_score_idx = torch.sort(ev_linear_score, descending=True)
-            np_linear_score = ev_linear_score_idx.cpu().detach().numpy()
-            for j, chosen in enumerate(np_linear_score):
-                order = np.zeros_like(chosen)
-                for p in range(args.num_tasks):
-                    order[chosen[p]] = args.num_tasks - p - 1
-                if use_cuda:
-                    lin_ret.append(
-                        test_module(_batch[j].cpu().numpy(), args.num_procs,
-                                    order, use_deadline=False, ret_score=False))
-                else:
-                    lin_ret.append(
-                        test_module(
-                            _batch[j].numpy(), args.num_procs, order, False, False))
-        print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
-            epoch, np.sum(ret), np.sum(lin_ret), opares
-        ))
-        print("경과시간 : {}m{:}s".format(minute, second))
-        if epoch % 1 == 0:
-            fname = "LIN-p%d-t%d-d%d-l[%s, %s]" \
-                    % (args.num_procs, args.num_tasks, int(use_deadline), args.range_l, args.range_r)
-            # torch.save(linear_model, "../Pandamodels/linearmodels/" + fname + ".torchmodel")
-            print("SAVE SUCCESS")
-            with open("log/softlog/" + fname, "a") as f:
+            endtime = time.time()
+            elapsed = (endtime - start)
+            minute = int(elapsed // 60)
+            second = int(elapsed - 60 * minute)
+            # EVALUATE
+            if batch_idx % 10 == 0:
+                linear_model.eval()
+                lin_ret = []
+                for i, _batch in eval_loader:
+                    if use_cuda:
+                        _batch = _batch.to("cuda:0")
+                    ev_linear_score = linear_model(_batch)
+                    _, ev_linear_score_idx = torch.sort(ev_linear_score, descending=True)
+                    np_linear_score = ev_linear_score_idx.cpu().detach().numpy()
+                    for j, chosen in enumerate(np_linear_score):
+                        order = np.zeros_like(chosen)
+                        for p in range(args.num_tasks):
+                            order[chosen[p]] = args.num_tasks - p - 1
+                        if use_cuda:
+                            lin_ret.append(
+                                test_module(_batch[j].cpu().numpy(), args.num_procs,
+                                            order, use_deadline=False, ret_score=False))
+                        else:
+                            lin_ret.append(
+                                test_module(
+                                    _batch[j].numpy(), args.num_procs, order, False, False))
                 print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
                     epoch, np.sum(ret), np.sum(lin_ret), opares
-                ), file=f)
-                print("경과시간 : {}m{:}s".format(minute, second), file=f)
-
-        linear_model.train()
+                ))
+                print("경과시간 : {}m{:}s".format(minute, second))
+                fname = "ttestLIN-p%d-t%d-d%d-l[%s, %s]" \
+                        % (args.num_procs, args.num_tasks, int(use_deadline), args.range_l, args.range_r)
+                # torch.save(linear_model, "../Pandamodels/linearmodels/" + fname + ".torchmodel")
+                print("SAVE SUCCESS")
+                with open("log/softlog/" + fname, "a") as f:
+                    print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
+                        epoch, np.sum(ret), np.sum(lin_ret), opares
+                    ), file=f)
+                    print("경과시간 : {}m{:}s".format(minute, second), file=f)
+                linear_model.train()

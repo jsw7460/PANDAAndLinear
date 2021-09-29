@@ -1,3 +1,4 @@
+import time
 import argparse
 import math
 from concurrent.futures import ProcessPoolExecutor
@@ -36,7 +37,8 @@ args = parser.parse_args()
 use_deadline = args.use_deadline
 test_module = heu.test_RTA_LC
 use_cuda = True
-""" 더 중요한 테스크는 우선순위가 높게 부여되는데, 스코어가 [1.4, 5.2, 3.5] 이면 [1, 3, 2]로 부여된다. 즉 우선순위가 높으면
+""" 
+더 중요한 테스크는 우선순위가 높게 부여되는데, 스코어가 [1.4, 5.2, 3.5] 이면 [1, 3, 2]로 부여된다. 즉 우선순위가 높으면
 그 높은대로 숫자를 따라간다. 냅섹과 반대로 구현되어있음..
 """
 
@@ -110,6 +112,7 @@ if __name__ == "__main__":
             res_opa[i] = ret
         opares = np.sum(res_opa)
 
+    start = time.time()
     print("[before training][OPA generates %d]" % opares)
     model.train()
     optimizer = optim.Adam(model.parameters(), lr=0.5 * args.lr)
@@ -206,6 +209,7 @@ if __name__ == "__main__":
             if (p >= 1. - 0.5 * confidence) or (p <= 0.5 * confidence):
                 bl_model.load_state_dict(model.state_dict())
             if updates % 100 == 0:
+                end = time.time()
                 model.eval()
                 ret = []
                 for i, _batch in eval_loader:
@@ -223,31 +227,37 @@ if __name__ == "__main__":
                 fname = "globalRL-p%d-t%d-d%d-l" % (args.num_procs, args.num_tasks, int(use_deadline))
                 rl_model_sum = np.sum(ret)
 
+                elapsed = (end - start)
+                minute = int(elapsed // 60)
+                second = int(elapsed - 60 * minute)
+
+                print("경과시간 : {}m {}s".format(minute, second))
                 print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]"
                       % (updates * args.batch_size, epoch, rl_model_sum, opares),
                       "log_probability\t", log_prob.cpu().detach().numpy().mean(), "avg_hit", np.mean(avg_hit))
+                torch.save(model, "../Pandamodels/globalrlmodels/" + fname + ".torchmodel")
                 stop = False
                 with open("globallog/" + fname, 'a') as f:
                     print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]" % (updates * args.batch_size, epoch, rl_model_sum, opares),
                           "log_probability\t", log_prob.cpu().detach().numpy().mean(), "avg_hit", np.mean(avg_hit), file=f)
                     if rl_model_sum == args.num_test_dataset:
                         print("total hit at epoch", epoch, file=f)
+                        print("경과시간 : {}m {}s".format(minute, second), file=f)
                         print("total hit at epoch", epoch)
-                        torch.save(model, "../Pandamodels/globalrlmodels/" + fname + ".torchmodel")
                         print("SAVE SUCCESS")
                         stop = True
 
                     if rl_model_sum > _max:
                         noupdateinarow = 0
                         _max = rl_model_sum
-                        torch.save(model, "../Pandamodels/globalrlmodels/" + fname + ".torchmodel")
+                        print("경과시간 : {}m {}s".format(minute, second), file=f)
                         print("SAVE SUCCESS")
                     else:
                         noupdateinarow += 1
                     if noupdateinarow >= 20:
                         print("not update 20 times", epoch, file=f)
+                        print("경과시간 : {}m {}s".format(minute, second), file=f)
                         print("not update m0 times", epoch)
-                        torch.save(model, "../Pandamodels/globalrlmodels/" + fname + ".torchmodel")
                         print("SAVE SUCCESS")
                         stop = True
                 if stop:

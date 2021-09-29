@@ -22,7 +22,7 @@ parser.add_argument("--num_tasks", type=int, default=32)
 parser.add_argument("--num_procs", type=int, default=4)
 parser.add_argument("--num_epochs", type=int, default=10)
 parser.add_argument("--num_train_dataset", type=int, default=100000)
-parser.add_argument("--num_test_dataset", type=int, default=5000)
+parser.add_argument("--num_test_dataset", type=int, default=50)
 parser.add_argument("--embedding_size", type=int, default=128)
 parser.add_argument("--hidden_size", type=int, default=128)
 parser.add_argument("--batch_size", type=int, default=256)
@@ -30,8 +30,8 @@ parser.add_argument("--grad_clip", type=float, default=1.5)
 parser.add_argument("--lr", type=float, default=1e-4)
 parser.add_argument("--lr_decay_step", type=int, default=100)
 parser.add_argument("--use_deadline", action="store_true")
-parser.add_argument("--range_l", type=str, default="4.60")
-parser.add_argument("--range_r", type=str, default="4.60")
+parser.add_argument("--range_l", type=str, default="3.10")
+parser.add_argument("--range_r", type=str, default="3.10")
 parser.add_argument("--use_cuda", action="store_true", default=True)
 
 args = parser.parse_args()
@@ -104,8 +104,8 @@ if __name__ == "__main__":
     tmp = torch.load("../Pandamodels/globalrlmodels/" + load_fname + ".torchmodel").cuda()
 
     rl_model = Solver(args.num_procs, args.embedding_size, args.hidden_size,
-                      args.num_tasks, use_deadline=False, use_cuda=True)
-    rl_model.load_state_dict(tmp.state_dict())
+                      args.num_tasks, use_deadline=False, use_cuda=True, only_encoder=True)
+    rl_model.load_state_dict(tmp.state_dict(), strict=False)
     if args.use_cuda:
         rl_model.cuda()
 
@@ -137,10 +137,10 @@ if __name__ == "__main__":
     rl_model.train()
     # Make a baseline model
     bl_model = Solver(args.num_procs, args.embedding_size, args.hidden_size,
-                      args.num_tasks, use_deadline=False, use_cuda=True)
+                      args.num_tasks, use_deadline=False, use_cuda=True, only_encoder=True)
     if args.use_cuda:
         bl_model.cuda()
-    bl_model.load_state_dict(rl_model.state_dict())
+    bl_model.load_state_dict(rl_model.state_dict(), strict=False)
     bl_model.eval()
     optimizer = optim.Adam(rl_model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, args.lr_decay_step, gamma=0.9, last_epoch=-1)
@@ -179,65 +179,65 @@ if __name__ == "__main__":
             p = scipy.stats.t.cdf(tval, num_samples)
             if (p >= 1. - 0.5 * confidence) or (p <= 0.5 * confidence):
                 bl_model.load_state_dict(rl_model.state_dict())
-            if updates % 50 == 0:
-                end = time.time()
-                rl_model.eval()
-                ret = []
-                for i, _batch in eval_loader:
-                    if use_cuda:
-                        _batch = _batch.cuda()
-                    R, log_prob, actions = rl_model(_batch, argmax=True)
-                    for j, chosen in enumerate(actions.cpu().numpy()):
-                        order = np.zeros_like(chosen)
-                        for k in range(args.num_tasks):
-                            order[chosen[k]] = args.num_tasks - k - 1       # 중요할수록 숫자가 높다.
-                        if use_cuda:
-                            ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs,
-                                                   order, args.use_deadline, False))
-                        else:
-                            ret.append(test_module(_batch[j].numpy(), args.num_procs,
-                                                   order, args.use_deadline, False))
-                fname = "localRL-p%d-t%d-d%d-l[%s, %s]" % (args.num_procs, args.num_tasks,
-                                                       int(args.use_deadline), args.range_l, args.range_r)
-                rl_model_sum = np.sum(ret)
-
-                elapsed = (end - start)
-                minute = int(elapsed // 60)
-                second = int(elapsed - 60 * minute)
-
-                print("경과시간 : {}m {}s".format(minute, second))
-                print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]"
-                      % (updates * args.batch_size, epoch, rl_model_sum, opares),
-                      "log_probability\t", log_prob.cpu().detach().numpy().mean(), "avg_hit", np.mean(avg_hit))
-                stop = False
-                with open("log/locallog/" + fname, "a") as f:
-                    print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]"
-                          % (updates * args.batch_size, epoch, rl_model_sum, opares),
-                          "log_probability\t", log_prob.cpu().detach().numpy().mean(),
-                          "avg_hit", np.mean(avg_hit), file=f)
-                    if rl_model_sum == args.num_test_dataset:
-                        print("total hit at epoch", epoch, file=f)
-                        print("경과시간 : {}m {}s".format(minute, second), file=f)
-                        print("total hit at epoch", epoch)
-                        torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
-                        print("SAVE SUCCESS")
-                        stop = True
-
-                    if rl_model_sum > _max:
-                        noupdateinarow = 0
-                        _max = rl_model_sum
-                        torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
-                        print("SAVE SUCCESS")
-                    else:
-                        noupdateinarow += 1
-                    if noupdateinarow >= 2:
-                        print("not update 2 times", epoch, file=f)
-                        print("경과시간 : {}m {}s".format(minute, second), file=f)
-                        print("not update m0 times", epoch)
-                        torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
-                        print("SAVE SUCCESS")
-                        stop = True
-                if stop:
-                    raise NotImplementedError
-
-                rl_model.train()
+            # if updates % 50 == 0:
+            #     end = time.time()
+            #     rl_model.eval()
+            #     ret = []
+            #     for i, _batch in eval_loader:
+            #         if use_cuda:
+            #             _batch = _batch.cuda()
+            #         R, log_prob, actions = rl_model(_batch, argmax=True)
+            #         for j, chosen in enumerate(actions.cpu().numpy()):
+            #             order = np.zeros_like(chosen)
+            #             for k in range(args.num_tasks):
+            #                 order[chosen[k]] = args.num_tasks - k - 1       # 중요할수록 숫자가 높다.
+            #             if use_cuda:
+            #                 ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs,
+            #                                        order, args.use_deadline, False))
+            #             else:
+            #                 ret.append(test_module(_batch[j].numpy(), args.num_procs,
+            #                                        order, args.use_deadline, False))
+            #     fname = "encoderRL-p%d-t%d-d%d-l[%s, %s]" % (args.num_procs, args.num_tasks,
+            #                                            int(args.use_deadline), args.range_l, args.range_r)
+            #     rl_model_sum = np.sum(ret)
+            #
+            #     elapsed = (end - start)
+            #     minute = int(elapsed // 60)
+            #     second = int(elapsed - 60 * minute)
+            #
+            #     print("경과시간 : {}m {}s".format(minute, second))
+            #     print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]"
+            #           % (updates * args.batch_size, epoch, rl_model_sum, opares),
+            #           "log_probability\t", log_prob.cpu().detach().numpy().mean(), "avg_hit", np.mean(avg_hit))
+            #     stop = False
+            #     with open("log/locallog/" + fname, "a") as f:
+            #         print("[consumed %d samples][at epoch %d][RL model generates %d][OPA generates %d]"
+            #               % (updates * args.batch_size, epoch, rl_model_sum, opares),
+            #               "log_probability\t", log_prob.cpu().detach().numpy().mean(),
+            #               "avg_hit", np.mean(avg_hit), file=f)
+            #         if rl_model_sum == args.num_test_dataset:
+            #             print("total hit at epoch", epoch, file=f)
+            #             print("경과시간 : {}m {}s".format(minute, second), file=f)
+            #             print("total hit at epoch", epoch)
+            #             torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
+            #             print("SAVE SUCCESS")
+            #             stop = True
+            #
+            #         if rl_model_sum > _max:
+            #             noupdateinarow = 0
+            #             _max = rl_model_sum
+            #             torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
+            #             print("SAVE SUCCESS")
+            #         else:
+            #             noupdateinarow += 1
+            #         if noupdateinarow >= 2:
+            #             print("not update 2 times", epoch, file=f)
+            #             print("경과시간 : {}m {}s".format(minute, second), file=f)
+            #             print("not update m0 times", epoch)
+            #             torch.save(rl_model, "../Pandamodels/localrlmodels/" + fname + ".torchmodel")
+            #             print("SAVE SUCCESS")
+            #             stop = True
+            #     if stop:
+            #         raise NotImplementedError
+            #
+            #     rl_model.train()

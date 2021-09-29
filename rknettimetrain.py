@@ -20,20 +20,20 @@ from util import get_util_range, Datasets
 test_module = heu.test_RTA_LC
 parser = argparse.ArgumentParser()
 
-parser.add_argument("--num_tasks", type=int, default=32)
-parser.add_argument("--num_procs", type=int, default=4)
-parser.add_argument("--num_epochs", type=int, default=50)
+parser.add_argument("--num_tasks", type=int, default=64)
+parser.add_argument("--num_procs", type=int, default=8)
+parser.add_argument("--num_epochs", type=int, default=2)
 parser.add_argument("--num_train_dataset", type=int, default=200000)
-parser.add_argument("--num_test_dataset", type=int, default=50)
+parser.add_argument("--num_test_dataset", type=int, default=300)
 parser.add_argument("--embedding_size", type=int, default=128)
 parser.add_argument("--hidden_size", type=int, default=128)
-parser.add_argument("--batch_size", type=int, default=256)
+parser.add_argument("--batch_size", type=int, default=20)
 parser.add_argument("--grad_clip", type=float, default=1.5)
 parser.add_argument("--lr", type=float, default=1.0 * 1e-2)
 parser.add_argument("--lr_decay_step", type=int, default=100)
 parser.add_argument("--use_deadline", action="store_true")
-parser.add_argument("--range_l", type=str, default="4.60")
-parser.add_argument("--range_r", type=str, default="4.60")
+parser.add_argument("--range_l", type=str, default="6.10")
+parser.add_argument("--range_r", type=str, default="6.10")
 
 confidence = 0.05
 
@@ -41,7 +41,7 @@ args = parser.parse_args()
 use_deadline = args.use_deadline
 use_cuda = True
 
-fname = "RKNET-p%d-t%d-d%d-l[%s, %s]" % (
+fname = "ttRKNET-p%d-t%d-d%d-l[%s, %s]" % (
             args.num_procs, args.num_tasks, int(use_deadline), args.range_l, args.range_r)
 
 
@@ -124,20 +124,20 @@ if __name__ == "__main__":
     rl_model = rl_model.eval()
 
     ret = []
-    # for i, _batch in eval_loader:
-    #     if use_cuda:
-    #         _batch = _batch.cuda()
-    #     R, log_prob, actions = model(_batch, argmax=True)
-    #     for j, chosen in enumerate(actions.cpu().numpy()):
-    #         order = np.zeros_like(chosen)
-    #         for p in range(args.num_tasks):
-    #             order[chosen[p]] = args.num_tasks - p - 1
-    #         if use_cuda:
-    #             ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline, False))
-    #         else:
-    #             ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
-    #
-    # print("[Before training][RL model generates %d]" % (np.sum(ret)))
+    for i, _batch in eval_loader:
+        if use_cuda:
+            _batch = _batch.cuda()
+        R, log_prob, actions = model(_batch, argmax=True)
+        for j, chosen in enumerate(actions.cpu().numpy()):
+            order = np.zeros_like(chosen)
+            for p in range(args.num_tasks):
+                order[chosen[p]] = args.num_tasks - p - 1
+            if use_cuda:
+                ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline, False))
+            else:
+                ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
+
+    print("[Before training][RL model generates %d]" % (np.sum(ret)))
 
     linear_model = LinearSolver(args.num_procs, args.num_tasks,
                                 args.use_deadline, use_cuda)
@@ -171,40 +171,38 @@ if __name__ == "__main__":
             loss_ += linear_loss / args.batch_size
             print(epoch, linear_loss)
             optimizer.step()
+            endtime = time.time()
+            elapsed = (endtime - start)
+            minute = int(elapsed // 60)
+            second = int(elapsed - 60 * minute)
             if batch_idx % 10 == 0:
-                with open("cumloss/rank/" + fname, "a") as f:
-                    print("EPOCH:{}, LOSS:{:.3f}".format(epoch, loss_ / (batch_idx + 1)), file=f)
+                # EVALUATE
+                linear_model.eval()
+                lin_ret = []
+                for i, _batch in eval_loader:
+                    if use_cuda:
+                        _batch = _batch.to("cuda:0")
+                    ev_linear_score = linear_model(_batch)
+                    _, ev_linear_score_idx = torch.sort(ev_linear_score, descending=True)
+                    np_linear_score = ev_linear_score_idx.cpu().detach().numpy()
+                    for j, chosen in enumerate(np_linear_score):
+                        order = np.zeros_like(chosen)
+                        for p in range(args.num_tasks):
+                            order[chosen[p]] = args.num_tasks - p - 1
+                        if use_cuda:
+                            lin_ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline=False))
+                        else:
+                            lin_ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
+                print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
+                    epoch, np.sum(ret), np.sum(lin_ret), opares
+                ))
+                print("경과시간 : {}m{:}s".format(minute, second))
+                linear_model.train()
+                with open("../Pandamodels/rknetmodels/" + fname + ".torchmodel", "wb") as f:
+                    torch.save(linear_model, f)
+                with open("log/ranknetlog/" + fname, "a") as f:
+                    print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
+                        epoch, np.sum(ret), np.sum(lin_ret), opares
+                    ), file=f)
+                    print("경과시간 : {}m{:}s".format(minute, second), file=f)
         scheduler.step()
-        endtime = time.time()
-        elapsed = (endtime - start)
-        minute = int(elapsed // 60)
-        second = int(elapsed - 60 * minute)
-        # EVALUATE
-        linear_model.eval()
-        lin_ret = []
-        for i, _batch in eval_loader:
-            if use_cuda:
-                _batch = _batch.to("cuda:0")
-            ev_linear_score = linear_model(_batch)
-            _, ev_linear_score_idx = torch.sort(ev_linear_score, descending=True)
-            np_linear_score = ev_linear_score_idx.cpu().detach().numpy()
-            for j, chosen in enumerate(np_linear_score):
-                order = np.zeros_like(chosen)
-                for p in range(args.num_tasks):
-                    order[chosen[p]] = args.num_tasks - p - 1
-                if use_cuda:
-                    lin_ret.append(test_module(_batch[j].cpu().numpy(), args.num_procs, order, use_deadline=False))
-                else:
-                    lin_ret.append(test_module(_batch[j].numpy(), args.num_procs, order, use_deadline, False))
-        print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
-            epoch, np.sum(ret), np.sum(lin_ret), opares
-        ))
-        print("경과시간 : {}m{:}s".format(minute, second))
-        linear_model.train()
-        with open("../Pandamodels/rknetmodels/" + fname + ".torchmodel", "wb") as f:
-            torch.save(linear_model, f)
-        with open("log/ranknetlog/" + fname, "a") as f:
-            print("EPOCH : {} / RL MODEL GENERATES : {} / LINEAR MODEL GENERATES : {} / OPA GENERATES : {}".format(
-                epoch, np.sum(ret), np.sum(lin_ret), opares
-            ), file=f)
-            print("경과시간 : {}m{:}s".format(minute, second), file=f)

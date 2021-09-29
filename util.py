@@ -50,12 +50,16 @@ class Datasets(Dataset):
         super(Datasets, self).__init__()
         ret = []
         le = []
-        for dd in l:
-            ret.append(dd.data_set)
+        try:
+            for dd in l:
+                ret.append(dd.data_set)
+        except AttributeError:
+            for dd in l:
+                ret.append(dd)
+
         self.data_set = np.vstack(ret)
 
     def setlen(self, newlen):
-        self.data_set = shuffle(self.data_set)
         self.data_set = self.data_set[:newlen]
 
     def __len__(self):
